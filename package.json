@@ -1,0 +1,167 @@
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+let currentUser = null;
+let plans = {};
+let selectedPlan = null;
+
+function showMessage(text, type = 'info') {
+  const el = $('#authMessage');
+  el.textContent = text;
+  el.style.color = type === 'error' ? '#8f2418' : '#652a15';
+}
+
+function switchTab(which) {
+  const isRegister = which === 'register';
+  $('#newUserTab').classList.toggle('active', isRegister);
+  $('#oldUserTab').classList.toggle('active', !isRegister);
+  $('#registerForm').classList.toggle('active', isRegister);
+  $('#loginForm').classList.toggle('active', !isRegister);
+  showMessage('');
+}
+
+async function api(url, options = {}) {
+  const res = await fetch(url, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || '请求失败');
+  return data;
+}
+
+function showApp(user) {
+  currentUser = user;
+  $('#authView').classList.add('hidden');
+  $('#appView').classList.remove('hidden');
+  $('#userEmail').textContent = user.email;
+  loadOrders();
+}
+
+function showAuth() {
+  currentUser = null;
+  $('#authView').classList.remove('hidden');
+  $('#appView').classList.add('hidden');
+}
+
+async function init() {
+  const planRes = await api('/api/plans');
+  plans = planRes.plans;
+  const me = await api('/api/me');
+  if (me.user) showApp(me.user);
+  else showAuth();
+}
+
+$('#newUserTab').addEventListener('click', () => switchTab('register'));
+$('#oldUserTab').addEventListener('click', () => switchTab('login'));
+
+$('#registerForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.currentTarget);
+  try {
+    const data = await api('/api/register', {
+      method: 'POST',
+      body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
+    });
+    showMessage(data.message || '注册成功，请登录。');
+    e.currentTarget.reset();
+    switchTab('login');
+    $('#authMessage').textContent = '注册成功，请使用刚才的账号密码登录。';
+  } catch (err) {
+    showMessage(err.message, 'error');
+  }
+});
+
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.currentTarget);
+  try {
+    const data = await api('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: form.get('email'), password: form.get('password') })
+    });
+    e.currentTarget.reset();
+    showApp(data.user);
+  } catch (err) {
+    showMessage(err.message, 'error');
+  }
+});
+
+$('#logoutBtn').addEventListener('click', async () => {
+  await api('/api/logout', { method: 'POST' });
+  showAuth();
+});
+
+$$('.buyBtn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    selectedPlan = btn.dataset.plan;
+    const plan = plans[selectedPlan];
+    $('#payTitle').textContent = `${plan.name} · ¥${plan.amount}/年`;
+    $('#payDesc').textContent = plan.countries;
+    $('#qrImage').src = plan.qr;
+    $('#amountBadge').textContent = `¥${plan.amount}`;
+    $('#payPanel').classList.remove('hidden');
+    $('#payPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+});
+
+$('#cancelPayBtn').addEventListener('click', () => {
+  selectedPlan = null;
+  $('#payPanel').classList.add('hidden');
+});
+
+$('#paidBtn').addEventListener('click', async () => {
+  if (!selectedPlan) return;
+  try {
+    await api('/api/orders', { method: 'POST', body: JSON.stringify({ plan: selectedPlan }) });
+    $('#payPanel').classList.add('hidden');
+    selectedPlan = null;
+    await loadOrders();
+    alert('已提交，正在开通线路。');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+async function loadOrders() {
+  if (!currentUser) return;
+  const data = await api('/api/my-orders');
+  const list = $('#ordersList');
+  if (!data.orders.length) {
+    list.innerHTML = '<p class="muted">暂无订单，选择套餐并付款后会显示开通状态。</p>';
+    return;
+  }
+  list.innerHTML = data.orders.map(o => `
+    <div class="order-item">
+      <div>
+        <strong>${o.planName}</strong>
+        <p class="muted">金额 ¥${o.amount} · 提交时间 ${formatTime(o.createdAt)}</p>
+        ${o.nodeText ? `<pre class="node-box">${escapeHtml(o.nodeText)}</pre>` : ''}
+      </div>
+      <div class="status">${o.status}</div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(str = '') {
+  return String(str)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function formatTime(iso) {
+  if (!iso) return '-';
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false });
+}
+
+$('#refreshOrdersBtn').addEventListener('click', loadOrders);
+
+init().catch((err) => {
+  console.error(err);
+  showAuth();
+  showMessage('网站初始化失败，请稍后重试。', 'error');
+});
